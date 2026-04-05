@@ -31,6 +31,35 @@ This server provides a standardized interface for AI applications to control sys
 - macOS 10.15 or later
 - Node.js 18 or later
 
+## Transport Modes
+
+The server supports two transport modes:
+
+- **stdio** (default) — communicates over standard input/output, intended for local MCP clients such as Claude Desktop.
+- **streamable HTTP** — starts an Express HTTP server, enabling network access from remote clients.
+
+### Starting in HTTP mode
+
+```bash
+# Using CLI flags
+node dist/index.js --transport http --port 3001
+
+# Using npm script
+npm run start:http
+
+# Using environment variables
+TRANSPORT=http PORT=8080 node dist/index.js
+```
+
+### Configuration options
+
+| Option | CLI Flag | Env Var | Default | Description |
+|--------|----------|---------|---------|-------------|
+| Transport | `--transport` | `TRANSPORT` | `stdio` | Transport mode: `stdio` or `http` |
+| Port | `--port` | `PORT` | `3001` | HTTP server port (only for `http` transport) |
+
+> **Note:** CLI flags take priority over environment variables.
+
 ## Available Categories
 
 ### Calendar
@@ -432,12 +461,24 @@ DEBUG=applescript-mcp* npm start
 ### Example configuration
 After running `npm run build` add the following to your `mcp.json` file:
 
+**stdio (local) client:**
 ```json
 {
   "mcpServers": {
     "applescript-mcp-server": {
       "command": "node",
       "args": ["/path/to/applescript-mcp/dist/index.js"]
+    }
+  }
+}
+```
+
+**Streamable HTTP (remote) client:**
+```json
+{
+  "mcpServers": {
+    "applescript-mcp-server": {
+      "url": "http://YOUR_MAC_IP:3001/mcp"
     }
   }
 }

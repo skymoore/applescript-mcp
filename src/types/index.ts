@@ -74,4 +74,16 @@ export interface FrameworkOptions {
    * Optional flag to enable or disable debug mode.
    */
   debug?: boolean;
+
+  /**
+   * Which transport to use for the MCP server.
+   * Defaults to "stdio" if not specified.
+   */
+  transport?: "stdio" | "http";
+
+  /**
+   * Port number for the HTTP transport.
+   * Only used when `transport` is set to "http". Defaults to 3001.
+   */
+  port?: number;
 }

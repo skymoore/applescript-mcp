@@ -11,14 +11,37 @@ import { shortcutsCategory } from "./categories/shortcuts.js";
 import { messagesCategory } from "./categories/messages.js";
 import { notesCategory } from "./categories/notes.js";
 
+// --- Transport configuration via CLI args and environment variables ---
+// CLI args take priority over env vars; env vars fall back to defaults.
+
+const args = process.argv.slice(2);
+
+function getArg(name: string): string | undefined {
+  const index = args.indexOf(`--${name}`);
+  return index !== -1 && index + 1 < args.length ? args[index + 1] : undefined;
+}
+
+const rawTransport = getArg("transport") ?? process.env["TRANSPORT"];
+const rawPort     = getArg("port")      ?? process.env["PORT"];
+
+const transport: "stdio" | "http" =
+  rawTransport === "http" ? "http" : "stdio";
+
+const port: number | undefined =
+  rawPort !== undefined ? parseInt(rawPort, 10) : undefined;
+
+// --- End transport configuration ---
+
 const server = new AppleScriptFramework({
   name: "applescript-server",
   version: "1.0.4",
   debug: false,
+  transport,
+  ...(port !== undefined ? { port } : {}),
 });
 
 // Log startup information using stderr (server isn't connected yet)
-console.error(`[INFO] Starting AppleScript MCP server - PID: ${process.pid}`);
+console.error(`[INFO] Starting AppleScript MCP server - PID: ${process.pid} - transport: ${transport}${transport === "http" ? ` - port: ${port ?? 3001}` : ""}`);
 
 // Add all categories
 console.error("[INFO] Registering categories...");

@@ -1,5 +1,6 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
@@ -9,6 +10,11 @@ import {
 import { exec } from "child_process";
 import { promisify } from "util";
 import os from "os";
+import { randomUUID } from "node:crypto";
+import express from "express";
+import cors from "cors";
+import type { Request, Response } from "express";
+import type { Server as HttpServer } from "node:http";
 import {
   ScriptCategory,
   ScriptDefinition,
@@ -35,6 +41,10 @@ export class AppleScriptFramework {
   private _initInfo: Record<string, any> = {};
   private _isConnected: boolean = false;
   private _pendingCategories: Array<Record<string, any>> = [];
+  private transportType: "stdio" | "http";
+  private port: number;
+  private _httpServer: HttpServer | null = null;
+  private _httpTransports: Map<string, StreamableHTTPServerTransport> = new Map();
 
   /**
    * Constructs an instance of AppleScriptFramework.
@@ -43,7 +53,9 @@ export class AppleScriptFramework {
   constructor(options: FrameworkOptions = {}) {
     const serverName = options.name || "applescript-server";
     const serverVersion = options.version || "1.0.0";
-    
+    this.transportType = options.transport ?? "stdio";
+    this.port = options.port ?? 3001;
+
     this.server = new Server(
       {
         name: serverName,
@@ -158,8 +170,7 @@ export class AppleScriptFramework {
       try {
         this.server.sendLoggingMessage({
           level: level,
-          message: message,
-          data: data || {},
+          data: { message, ...(data || {}) },
         });
       } catch (error) {
         // Silently ignore logging errors - we've already logged to console
@@ -214,11 +225,14 @@ export class AppleScriptFramework {
   }
 
   /**
-   * Sets up request handlers for the server.
+   * Sets up request handlers for the given server (or this.server if none provided).
+   * @param server - Optional Server instance to set up handlers on. Defaults to this.server.
    */
-  private setupHandlers(): void {
+  private setupHandlers(server?: Server): void {
+    const target = server ?? this.server;
+
     // List available tools
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    target.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: this.categories.flatMap((category) =>
         category.scripts.map((script) => ({
           name: `${category.name}_${script.name}`, // Changed from dot to underscore
@@ -232,7 +246,7 @@ export class AppleScriptFramework {
     }));
 
     // Handle tool execution
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    target.setRequestHandler(CallToolRequestSchema, async (request) => {
       const toolName = request.params.name;
       this.log("info", "Tool execution requested", { 
         tool: toolName,
@@ -332,9 +346,69 @@ export class AppleScriptFramework {
   }
 
   /**
+   * Creates a new Server instance with the same capabilities as the main server.
+   */
+  private createServer(): Server {
+    return new Server(
+      {
+        name: this._initInfo.name,
+        version: this._initInfo.version,
+      },
+      {
+        capabilities: {
+          tools: {},
+          logging: {},
+        },
+      },
+    );
+  }
+
+  /**
+   * Gracefully shuts down the framework.
+   * For HTTP mode: closes all transports and the HTTP server.
+   * For stdio mode: disconnects the server.
+   */
+  async close(): Promise<void> {
+    if (this.transportType === "http") {
+      // Close all active HTTP transports
+      const closePromises = Array.from(this._httpTransports.values()).map(
+        (transport) => transport.close()
+      );
+      await Promise.all(closePromises);
+      this._httpTransports.clear();
+
+      // Close the HTTP server
+      if (this._httpServer) {
+        await new Promise<void>((resolve, reject) => {
+          this._httpServer!.close((err) => {
+            if (err) reject(err);
+            else resolve();
+          });
+        });
+        this._httpServer = null;
+      }
+    } else {
+      // stdio mode: close the main server
+      await this.server.close();
+      this._isConnected = false;
+    }
+  }
+
+  /**
    * Runs the AppleScript framework server.
    */
   async run(): Promise<void> {
+    if (this.transportType === "http") {
+      await this._runHttp();
+    } else {
+      await this._runStdio();
+    }
+  }
+
+  /**
+   * Runs the server using stdio transport (default behavior).
+   */
+  private async _runStdio(): Promise<void> {
     console.error("[INFO] Setting up request handlers");
     this.setupHandlers();
     
@@ -360,5 +434,119 @@ export class AppleScriptFramework {
       console.error("Failed to start AppleScript MCP server:", errorMessage);
       throw error;
     }
+  }
+
+  /**
+   * Runs the server using streamable HTTP transport.
+   */
+  private async _runHttp(): Promise<void> {
+    const app = express();
+
+    // Configure CORS (permissive for dev)
+    app.use(cors({
+      origin: "*",
+      methods: "GET,POST,DELETE",
+      exposedHeaders: ["mcp-session-id", "last-event-id", "mcp-protocol-version"],
+    }));
+
+    // Parse JSON bodies
+    app.use(express.json());
+
+    const totalScripts = this.categories.reduce((count, category) => count + category.scripts.length, 0);
+    console.error(`[INFO] Starting HTTP transport on port ${this.port} with ${this.categories.length} categories and ${totalScripts} scripts`);
+
+    // POST /mcp — main JSON-RPC endpoint
+    app.post("/mcp", async (req: Request, res: Response) => {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+      if (sessionId && this._httpTransports.has(sessionId)) {
+        // Reuse existing transport for this session
+        const transport = this._httpTransports.get(sessionId)!;
+        await transport.handleRequest(req, res, req.body);
+      } else if (!sessionId) {
+        // New session initialization
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (newSessionId) => {
+            this._httpTransports.set(newSessionId, transport);
+            console.error(`[INFO] New MCP session initialized: ${newSessionId}`);
+          },
+        });
+
+        // Create a fresh Server instance for this session
+        const sessionServer = this.createServer();
+        this.setupHandlers(sessionServer);
+        await sessionServer.connect(transport);
+
+        // Handle the initialization request
+        await transport.handleRequest(req, res, req.body);
+      } else {
+        // Session ID provided but not found
+        res.status(400).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32000,
+            message: "Bad Request: No valid session ID provided",
+          },
+          id: req.body?.id ?? null,
+        });
+      }
+    });
+
+    // GET /mcp — SSE stream for server-to-client notifications
+    app.get("/mcp", async (req: Request, res: Response) => {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+      if (sessionId && this._httpTransports.has(sessionId)) {
+        const transport = this._httpTransports.get(sessionId)!;
+        await transport.handleRequest(req, res);
+      } else {
+        res.status(400).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32000,
+            message: "Bad Request: No valid session ID provided",
+          },
+          id: null,
+        });
+      }
+    });
+
+    // DELETE /mcp — session termination
+    app.delete("/mcp", async (req: Request, res: Response) => {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+      if (sessionId && this._httpTransports.has(sessionId)) {
+        const transport = this._httpTransports.get(sessionId)!;
+        await transport.handleRequest(req, res);
+        // Clean up the session after deletion
+        this._httpTransports.delete(sessionId);
+        console.error(`[INFO] MCP session terminated: ${sessionId}`);
+      } else {
+        res.status(400).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32000,
+            message: "Bad Request: No valid session ID provided",
+          },
+          id: null,
+        });
+      }
+    });
+
+    // Start the HTTP server
+    await new Promise<void>((resolve) => {
+      this._httpServer = app.listen(this.port, () => {
+        console.error(`[NOTICE] AppleScript MCP HTTP server listening on port ${this.port}`);
+        resolve();
+      });
+    });
+
+    // Graceful shutdown on SIGINT
+    process.on("SIGINT", async () => {
+      console.error("[INFO] Received SIGINT, shutting down HTTP server...");
+      await this.close();
+      process.exit(0);
+    });
   }
 }
