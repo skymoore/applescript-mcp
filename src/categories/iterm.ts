@@ -1,6 +1,14 @@
 import { ScriptCategory } from "../types/index.js";
 
 /**
+ * Escapes a string for safe embedding inside an AppleScript double-quoted string.
+ * Backslashes must be escaped first, then double quotes.
+ */
+function escapeForAppleScript(str: string): string {
+  return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
  * iTerm-related scripts.
  * * paste_clipboard: Pastes the clipboard to an iTerm window
  * * run: Run a command in iTerm
@@ -13,8 +21,6 @@ export const itermCategory: ScriptCategory = {
       name: "paste_clipboard",
       description: "Paste clipboard content into iTerm",
       script: `
-        tell application "System Events" to keystroke "c" using {command down}
-        delay 0.1
         tell application "iTerm"
           set w to current window
           tell w's current session to write text (the clipboard)
@@ -53,7 +59,7 @@ export const itermCategory: ScriptCategory = {
             tell w's current session
           `
           }
-            write text "${args.command}"
+            write text "${escapeForAppleScript(args.command)}"
             activate
           end tell
         end tell

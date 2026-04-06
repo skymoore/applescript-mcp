@@ -6,10 +6,15 @@ import { clipboardCategory } from "./categories/clipboard.js";
 import { notificationsCategory } from "./categories/notifications.js";
 import { itermCategory } from "./categories/iterm.js";
 import { mailCategory } from "./categories/mail.js";
-import { pagesCategory } from "./categories/pages.js";
 import { shortcutsCategory } from "./categories/shortcuts.js";
 import { messagesCategory } from "./categories/messages.js";
 import { notesCategory } from "./categories/notes.js";
+import { shellCategory } from "./categories/shell.js";
+import { filesystemCategory } from "./categories/filesystem.js";
+import { screenshotCategory } from "./categories/screenshot.js";
+import { inputCategory } from "./categories/input.js";
+import { safariCategory } from "./categories/safari.js";
+import { windowsCategory } from "./categories/windows.js";
 
 // --- Transport configuration via CLI args and environment variables ---
 // CLI args take priority over env vars; env vars fall back to defaults.
@@ -52,11 +57,16 @@ server.addCategory(clipboardCategory);
 server.addCategory(notificationsCategory);
 server.addCategory(itermCategory);
 server.addCategory(mailCategory);
-server.addCategory(pagesCategory);
 server.addCategory(shortcutsCategory);
 server.addCategory(messagesCategory);
 server.addCategory(notesCategory);
-console.error(`[INFO] Registered ${11} categories successfully`);
+server.addCategory(shellCategory);
+server.addCategory(filesystemCategory);
+server.addCategory(screenshotCategory);
+server.addCategory(inputCategory);
+server.addCategory(safariCategory);
+server.addCategory(windowsCategory);
+console.error(`[INFO] Registered ${16} categories successfully`);
 
 // Start the server
 console.error("[INFO] Starting server...");
